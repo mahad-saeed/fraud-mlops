@@ -1,0 +1,12 @@
+pandas
+numpy
+scikit-learn
+xgboost
+mlflow
+flask
+prometheus-client
+scipy
+river
+matplotlib
+seaborn
+jupyter
