@@ -72,7 +72,7 @@ with mlflow.start_run(run_name="logistic_regression_v1"):
     mlflow.log_param("model_type", "logistic_regression")
     mlflow.log_param("class_weight", "balanced")
     mlflow.log_param("max_iter", 1000)
-    mlflow.log_metric("f1_score", f1_lr)
+    mlflow.log_metric("f1", f1_lr)
     mlflow.log_metric("auc_roc", auc_lr)
     mlflow.log_metric("precision", prec_lr)
     mlflow.log_metric("recall", recall_lr)
@@ -115,8 +115,9 @@ with mlflow.start_run(run_name="xgboost_v2"):
     mlflow.log_param("n_estimators", 100)
     mlflow.log_param("max_depth", 6)
     mlflow.log_param("learning_rate", 0.1)
-    mlflow.log_metric("f1_score", f1_xgb)
-    mlflow.log_metric("auc_roc", auc_xgb)
+    mlflow.log_metric("f1", f1_xgb)
+    mlflow.log_metric("xgb_f1", f1_xgb)   # REQUIRED for pipeline
+    mlflow.log_metric("auc", auc_xgb)
     mlflow.log_metric("precision", prec_xgb)
     mlflow.log_metric("recall", recall_xgb)
     mlflow.xgboost.log_model(
