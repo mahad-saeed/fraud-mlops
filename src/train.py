@@ -14,6 +14,7 @@ import mlflow
 import mlflow.sklearn
 import mlflow.xgboost
 import warnings
+import os
 warnings.filterwarnings('ignore')
 print("Script started")
 # ── 1. Load Data ──────────────────────────────────────────
@@ -42,8 +43,11 @@ print(f"Fraud in train: {y_train.sum()} | Fraud in test: {y_test.sum()}")
 fraud_ratio = (y_train == 0).sum() / (y_train == 1).sum()
 print(f"scale_pos_weight for XGBoost: {fraud_ratio:.1f}")
 
-# ── 4. MLflow Setup ───────────────────────────────────────
-mlflow.set_tracking_uri("http://127.0.0.1:5000")
+#--4 mlflow setup for ci/cd
+mlflow.set_tracking_uri(
+    os.environ.get("MLFLOW_TRACKING_URI", "sqlite:///mlflow.db")
+)
+
 mlflow.set_experiment("fraud-detection-baseline")
 
 # ── 5. Train Logistic Regression (v1 Baseline) ────────────
