@@ -6,4 +6,4 @@ RUN pip install --no-cache-dir -r requirements-docker.txt
 COPY src/ ./src/
 COPY data/ ./data/
 EXPOSE 5001
-CMD ["python", "src/serve.py"]
+CMD ["python", "src/serve.py"]x
