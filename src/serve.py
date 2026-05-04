@@ -80,9 +80,6 @@ def load_model():
     mlflow.set_tracking_uri(
         os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
     )
-    
-    # Retry logic — wait for MLflow to be ready
-    import time
     max_retries = 10
     for attempt in range(max_retries):
         try:
@@ -90,16 +87,17 @@ def load_model():
             versions = client.get_latest_versions(MODEL_NAME)
             latest = max(versions, key=lambda v: int(v.version))
             model_version = latest.version
-            model_uri = f"models:/{MODEL_NAME}/{model_version}"
+            run_id = latest.run_id
+            
+            # Load directly from run artifacts — bypass registry URI
+            model_uri = f"runs:/{run_id}/model"
             model = mlflow.pyfunc.load_model(model_uri)
             print(f"[Serve] Loaded model '{MODEL_NAME}' version {model_version}")
             return
         except Exception as e:
             print(f"[Serve] Attempt {attempt+1}/{max_retries} failed: {e}")
             time.sleep(10)
-    
-    raise RuntimeError("Could not connect to MLflow after multiple retries")
-# ── Load Reference Data For Drift Detection ────────────────
+    raise RuntimeError("Could not connect to MLflow after multiple retries")# ── Load Reference Data For Drift Detection ────────────────
 def load_reference_data():
     global reference_data, ensemble
     
@@ -193,13 +191,12 @@ def predict():
 
         # FIX 3a: confidence score (if model supports predict_proba)
         try:
-            unwrapped = model._model_impl  # unwrap pyfunc wrapper    
-            if hasattr(model, 'predict_proba'):
-                proba = model.predict_proba(features)
-                confidence = float(np.max(proba[0]))
-                confidence_gauge.set(confidence)
-        except AttributeError:
-            pass        
+            # pyfunc wraps XGBoost — unwrap to get the actual booster
+            unwrapped = model._model_impl.xgb_model   # works for mlflow.xgboost flavor
+            proba_raw = unwrapped.predict(xgboost.DMatrix(features))  # returns fraud probability
+            confidence_gauge.set(float(np.max(proba_raw)))
+        except Exception:
+            pass       
 
         # FIX 3b: rolling fraud rate from counter values
         fraud_total = prediction_counter.labels(model_version=model_version, prediction='fraud')._value.get()

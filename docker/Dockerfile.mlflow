@@ -6,7 +6,7 @@ WORKDIR /mlflow
 
 CMD ["mlflow", "server", \
      "--backend-store-uri", "sqlite:///mlflow.db", \
-     "--default-artifact-root", "./mlruns", \
+     "--default-artifact-root", "/mlflow/mlruns", \
      "--artifacts-destination", "./mlruns", \
      "--serve-artifacts", \
      "--host", "0.0.0.0", \

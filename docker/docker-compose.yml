@@ -30,9 +30,10 @@ services:
         condition: service_healthy
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_ARTIFACT_URI=http://mlflow:5000
     volumes:
       - ../data:/app/data
-      - ../mlruns:/mlflow/mlruns
+      - ../mlruns:/mlflow/mlruns  
     mem_limit: 512m
     
   prometheus:
