@@ -81,7 +81,30 @@ jobs:
           python src/train.py
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
+      
+      - name: Debug MLflow runs
+        run: |
+          python - <<'EOF'
+          import mlflow
+          import os
 
+          mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+          client = mlflow.tracking.MlflowClient()
+
+          # List all runs across all experiments
+          experiments = client.search_experiments()
+          for exp in experiments:
+              runs = client.search_runs(exp.experiment_id)
+              for run in runs:
+                  print(f"Run {run.info.run_id}: metrics={run.data.metrics}, params={run.data.params}")
+
+          # List all registered model versions
+          versions = client.search_model_versions("name='fraud_detector'")
+          for v in versions:
+              print(f"Version {v.version}: stage={v.current_stage}, run_id={v.run_id}")
+          EOF
+    env:
+      MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
       # ── 5. Evaluate & promote ──────────────────────────────────────────────
       - name: Evaluate and promote best model
         id: evaluate
@@ -125,8 +148,10 @@ jobs:
 
           print(f"Current production: version={prod_ver}  F1={prod_f1:.4f}")
 
-          promoted = False
-          if best_f1 > prod_f1:
+            
+            promoted = False
+            no_production_exists = len(prod_versions) == 0
+            if no_production_exists or best_f1 > prod_f1:
               # Archive the old production model
               for pv in prod_versions:
                   client.transition_model_version_stage(
@@ -140,10 +165,10 @@ jobs:
                   version=best_version.version,
                   stage="Production",
               )
-              print(f"✅ Promoted version {best_version.version} to Production")
+              print(f" Promoted version {best_version.version} to Production")
               promoted = True
           else:
-              print(f"ℹ️  Current production model is still the best — no promotion")
+              print(f"ℹ  Current production model is still the best — no promotion")
 
           # Write outputs for subsequent steps
           result = {
