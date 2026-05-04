@@ -7,6 +7,8 @@ on:
         description: 'Reason for manual trigger (e.g. drift detected, scheduled)'
         required: false
         default: 'manual dispatch'
+  repository_dispatch:
+    types: [drift-detected]
   push:
     paths:
       - 'src/train.py'

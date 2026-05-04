@@ -1,5 +1,7 @@
 import sys
 import os
+import threading
+import subprocess
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from flask import Flask, request, jsonify
@@ -72,20 +74,28 @@ MODEL_NAME = "fraud_detector"
 # ── Load Model From MLflow ─────────────────────────────────
 def load_model():
     global model, model_version
-    mlflow.set_tracking_uri("http://127.0.0.1:5000")
-    try:
-        # Load latest version from registry
-        client = mlflow.tracking.MlflowClient()
-        versions = client.get_latest_versions(MODEL_NAME)
-        latest = max(versions, key=lambda v: int(v.version))
-        model_version = latest.version
-        model_uri = f"models:/{MODEL_NAME}/{model_version}"
-        model = mlflow.pyfunc.load_model(model_uri)
-        print(f"[Serve] Loaded model '{MODEL_NAME}' version {model_version}")
-    except Exception as e:
-        print(f"[Serve] Error loading model: {e}")
-        raise
-
+    mlflow.set_tracking_uri(
+        os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
+    )
+    
+    # Retry logic — wait for MLflow to be ready
+    import time
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            client = mlflow.tracking.MlflowClient()
+            versions = client.get_latest_versions(MODEL_NAME)
+            latest = max(versions, key=lambda v: int(v.version))
+            model_version = latest.version
+            model_uri = f"models:/{MODEL_NAME}/{model_version}"
+            model = mlflow.pyfunc.load_model(model_uri)
+            print(f"[Serve] Loaded model '{MODEL_NAME}' version {model_version}")
+            return
+        except Exception as e:
+            print(f"[Serve] Attempt {attempt+1}/{max_retries} failed: {e}")
+            time.sleep(10)
+    
+    raise RuntimeError("Could not connect to MLflow after multiple retries")
 # ── Load Reference Data For Drift Detection ────────────────
 def load_reference_data():
     global reference_data, ensemble
@@ -115,6 +125,40 @@ def load_reference_data():
     print(f"[Serve] Reference data loaded: {len(reference_data)} samples")
     print(f"[Serve] Ensemble detector initialized")
 
+def trigger_github_actions():
+    token = os.environ.get("GITHUB_TOKEN")
+    repo = "mahad-saeed/fraud-mlops"
+    url = f"https://api.github.com/repos/{repo}/dispatches"
+    
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    payload = {"event_type": "drift-detected"}
+    
+    response = requests.post(url, json=payload, headers=headers)
+    if response.status_code == 204:
+        print("[Serve] GitHub Actions retraining triggered successfully")
+    else:
+        print(f"[Serve] GitHub trigger failed: {response.status_code} - {response.text}")
+
+def trigger_retrain():
+    print("[Retrain] Kicking off retraining in mlflow container...")
+    try:
+        result = subprocess.run([
+            "docker", "exec", "mlflow_server",
+            "bash", "-c",
+            "cd /mlflow && MLFLOW_TRACKING_URI=http://localhost:5000 python retrain.py"
+        ], capture_output=True, text=True, timeout=600)
+        print("[Retrain] stdout:", result.stdout)
+        if result.returncode == 0:
+            print("[Retrain] Success — reloading model...")
+            load_model()
+        else:
+            print("[Retrain] Failed:", result.stderr)
+    except Exception as e:
+        print(f"[Retrain] Error: {e}")
+        
 # ── Routes ─────────────────────────────────────────────────
 
 @app.route('/health', methods=['GET'])
@@ -184,15 +228,20 @@ def detect_drift():
         weighted_vote_gauge.set(result['weighted_vote'])
         batch_counter.inc()
         
-        # Log to MLflow
-        ensemble.log_to_mlflow(result, "fraud-drift-detection")
+        
+        # Log to MLflow async — don't block the response
+        threading.Thread(
+            target=ensemble.log_to_mlflow,
+            args=(result, "fraud-drift-detection"),
+            daemon=True
+        ).start()
         
         # Trigger retraining if ensemble votes yes
         if result['retrain_triggered']:
             retraining_counter.inc()
-            print(f"[Serve] Retraining triggered! Weighted vote: "
-                  f"{result['weighted_vote']}")
-        
+            print(f"[Serve] Retraining triggered! Weighted vote: {result['weighted_vote']}")
+            threading.Thread(target=trigger_retrain, daemon=True).start()
+            trigger_github_actions()
         return jsonify({
             'batch_id': batch_id,
             'drift_detected': result['retrain_triggered'],
