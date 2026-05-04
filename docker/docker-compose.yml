@@ -42,7 +42,7 @@ services:
       - "9090:9090"
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-      - ../monitoring/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml
+      - ../monitoring/alert.rules.yml:/etc/prometheus/alert.rules.yml
     mem_limit: 256m
 
   grafana:
