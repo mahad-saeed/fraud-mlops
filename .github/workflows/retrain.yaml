@@ -1,5 +1,3 @@
-# .github/workflows/retrain.yml
-
 name: Fraud Model Retrain Pipeline
 
 on:
@@ -25,11 +23,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── 1. Checkout ────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── 2. Python setup ────────────────────────────────────────────────────
       - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
@@ -41,71 +37,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ── 3. Dataset ─────────────────────────────────────────────────────────
-      # The full creditcard.csv is too large for the repo.
-      # Option A (default): generate a reproducible synthetic sample so the
-      #   pipeline always works without credentials.
-      # Option B: uncomment the Kaggle block and add KAGGLE_USERNAME /
-      #   KAGGLE_KEY as GitHub Secrets to pull the real dataset.
-      - name: Generate synthetic dataset (fallback)
+      - name: Generate synthetic dataset
         run: |
           python - <<'EOF'
           import numpy as np, pandas as pd, os
           os.makedirs("data", exist_ok=True)
           rng = np.random.default_rng(42)
-          n = 10_000
+          n = 10000
           df = pd.DataFrame(
               rng.standard_normal((n, 28)),
               columns=[f"V{i}" for i in range(1, 29)]
           )
-          df["Time"]   = np.arange(n) * 1.5
+          df["Time"] = np.arange(n) * 1.5
           df["Amount"] = rng.exponential(scale=88, size=n)
-          # ~0.17 % fraud to roughly match real class imbalance
-          df["Class"]  = (rng.random(n) < 0.0017).astype(int)
+          df["Class"] = (rng.random(n) < 0.0017).astype(int)
           df.to_csv("data/creditcard.csv", index=False)
           print(f"Synthetic dataset: {len(df)} rows, {df['Class'].sum()} fraud")
           EOF
 
-      # Uncomment this block and delete the step above to use the real dataset:
-      # - name: Download real dataset from Kaggle
-      #   env:
-      #     KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
-      #     KAGGLE_KEY:      ${{ secrets.KAGGLE_KEY }}
-      #   run: |
-      #     pip install kaggle
-      #     kaggle datasets download -d mlg-ulb/creditcardfraud -p data --unzip
-
-      # ── 4. Retrain ─────────────────────────────────────────────────────────
       - name: Retrain models
         run: |
           python src/train.py
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-      
-      - name: Debug MLflow runs
-        run: |
-          python - <<'EOF'
-          import mlflow
-          import os
 
-          mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
-          client = mlflow.tracking.MlflowClient()
-
-          # List all runs across all experiments
-          experiments = client.search_experiments()
-          for exp in experiments:
-              runs = client.search_runs(exp.experiment_id)
-              for run in runs:
-                  print(f"Run {run.info.run_id}: metrics={run.data.metrics}, params={run.data.params}")
-
-          # List all registered model versions
-          versions = client.search_model_versions("name='fraud_detector'")
-          for v in versions:
-              print(f"Version {v.version}: stage={v.current_stage}, run_id={v.run_id}")
-          EOF
-    env:
-      MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-      # ── 5. Evaluate & promote ──────────────────────────────────────────────
       - name: Evaluate and promote best model
         id: evaluate
         run: |
@@ -116,23 +71,26 @@ jobs:
           tracking_uri = os.environ["MLFLOW_TRACKING_URI"]
           mlflow.set_tracking_uri(tracking_uri)
           client = MlflowClient(tracking_uri=tracking_uri)
-
           model_name = os.environ["MODEL_NAME"]
 
-          # ── fetch all registered versions ──────────────────────────────────
           versions = client.search_model_versions(f"name='{model_name}'")
           if not versions:
-              print("No registered versions found — nothing to promote.")
+              print("No registered versions found.")
               raise SystemExit(0)
 
-          # Pull the F1 score logged against each version's source run
           def get_f1(version):
               try:
                   run = client.get_run(version.run_id)
-                  # train.py logs both lr and xgb metrics; prefer xgb f1 if present
                   metrics = run.data.metrics
-                  return metrics.get("xgb_f1", metrics.get("f1", 0.0))
-              except Exception:
+                  print(f"  run {version.run_id} metrics: {metrics}")
+                  for key in ["xgb_f1", "f1", "f1_score", "test_f1", "val_f1"]:
+                      if key in metrics:
+                          return metrics[key]
+                  if metrics:
+                      return max(metrics.values())
+                  return 0.0
+              except Exception as e:
+                  print(f"  get_f1 error: {e}")
                   return 0.0
 
           scored = [(v, get_f1(v)) for v in versions]
@@ -141,36 +99,30 @@ jobs:
           best_version, best_f1 = scored[0]
           print(f"Best version: {best_version.version}  F1={best_f1:.4f}")
 
-          # ── find current production version (if any) ───────────────────────
           prod_versions = [v for v in versions if v.current_stage == "Production"]
           prod_f1 = get_f1(prod_versions[0]) if prod_versions else 0.0
           prod_ver = prod_versions[0].version if prod_versions else "none"
-
           print(f"Current production: version={prod_ver}  F1={prod_f1:.4f}")
 
-            
-            promoted = False
-            no_production_exists = len(prod_versions) == 0
-            if no_production_exists or best_f1 > prod_f1:
-              # Archive the old production model
+          promoted = False
+          no_production_exists = len(prod_versions) == 0
+          if no_production_exists or best_f1 > prod_f1:
               for pv in prod_versions:
                   client.transition_model_version_stage(
                       name=model_name,
                       version=pv.version,
                       stage="Archived",
                   )
-              # Promote the new best model
               client.transition_model_version_stage(
                   name=model_name,
                   version=best_version.version,
                   stage="Production",
               )
-              print(f" Promoted version {best_version.version} to Production")
+              print(f"Promoted version {best_version.version} to Production")
               promoted = True
           else:
-              print(f"ℹ  Current production model is still the best — no promotion")
+              print("Current production model is still the best - no promotion")
 
-          # Write outputs for subsequent steps
           result = {
               "promoted": promoted,
               "best_version": best_version.version,
@@ -180,7 +132,6 @@ jobs:
           }
           print(json.dumps(result, indent=2))
 
-          # GitHub Actions step output
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"promoted={str(promoted).lower()}\n")
               fh.write(f"best_version={best_version.version}\n")
@@ -188,9 +139,8 @@ jobs:
           EOF
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-          MODEL_NAME:          ${{ env.MODEL_NAME }}
+          MODEL_NAME: ${{ env.MODEL_NAME }}
 
-      # ── 6. Log pipeline run to MLflow ──────────────────────────────────────
       - name: Log CI/CD pipeline run to MLflow
         run: |
           python - <<'EOF'
@@ -200,21 +150,20 @@ jobs:
           mlflow.set_experiment("cicd_pipeline_runs")
 
           with mlflow.start_run(run_name="github_actions_retrain"):
-              mlflow.log_param("trigger",       os.environ.get("TRIGGER_REASON", "manual"))
-              mlflow.log_param("promoted",      os.environ["PROMOTED"])
-              mlflow.log_param("best_version",  os.environ["BEST_VERSION"])
-              mlflow.log_metric("best_f1",  float(os.environ["BEST_F1"]))
+              mlflow.log_param("trigger", os.environ.get("TRIGGER_REASON", "manual"))
+              mlflow.log_param("promoted", os.environ["PROMOTED"])
+              mlflow.log_param("best_version", os.environ["BEST_VERSION"])
+              mlflow.log_metric("best_f1", float(os.environ["BEST_F1"]))
               mlflow.log_param("runner_os", "ubuntu-latest")
-          print("Pipeline run logged to MLflow ✅")
+          print("Pipeline run logged to MLflow")
           EOF
         env:
           MLFLOW_TRACKING_URI: ${{ env.MLFLOW_TRACKING_URI }}
-          TRIGGER_REASON:      ${{ github.event.inputs.reason || 'push trigger' }}
-          PROMOTED:            ${{ steps.evaluate.outputs.promoted }}
-          BEST_VERSION:        ${{ steps.evaluate.outputs.best_version }}
-          BEST_F1:             ${{ steps.evaluate.outputs.best_f1 }}
+          TRIGGER_REASON: ${{ github.event.inputs.reason || 'push trigger' }}
+          PROMOTED: ${{ steps.evaluate.outputs.promoted }}
+          BEST_VERSION: ${{ steps.evaluate.outputs.best_version }}
+          BEST_F1: ${{ steps.evaluate.outputs.best_f1 }}
 
-      # ── 7. Build Docker image (only on promotion) ──────────────────────────
       - name: Build Docker image
         if: steps.evaluate.outputs.promoted == 'true'
         run: |
@@ -225,11 +174,9 @@ jobs:
             .
           echo "Docker image built: fraud_api:v${{ steps.evaluate.outputs.best_version }}"
 
-      # ── 8. Push to GitHub Container Registry (optional) ───────────────────
-      # Requires GHCR_TOKEN secret (use a PAT with write:packages scope).
-      # Remove this step if you don't need image publishing.
       - name: Push image to GHCR
         if: steps.evaluate.outputs.promoted == 'true'
+        continue-on-error: true
         run: |
           echo "${{ secrets.GHCR_TOKEN }}" | \
             docker login ghcr.io -u ${{ github.actor }} --password-stdin
@@ -237,14 +184,12 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/fraud-mlops/fraud_api:latest
           docker push \
             ghcr.io/${{ github.repository_owner }}/fraud-mlops/fraud_api:latest
-        continue-on-error: true   # don't fail the whole pipeline if GHCR push fails
 
-      # ── 9. Summary ────────────────────────────────────────────────────────
       - name: Write job summary
         if: always()
         run: |
           cat >> $GITHUB_STEP_SUMMARY <<EOF
-          ## 🔄 Fraud Model Retrain Pipeline
+          ## Fraud Model Retrain Pipeline
 
           | Field | Value |
           |---|---|
