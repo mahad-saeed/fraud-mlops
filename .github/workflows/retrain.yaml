@@ -169,6 +169,7 @@ jobs:
         run: |
           docker build \
             -f docker/Dockerfile \
+            --build-context root=. \
             -t fraud_api:latest \
             -t fraud_api:v${{ steps.evaluate.outputs.best_version }} \
             .
