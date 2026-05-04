@@ -63,6 +63,9 @@ batch_counter = Counter(
     'batches_processed_total',
     'Total number of batches processed by drift detector'
 )
+fraud_rate_gauge   = Gauge('fraud_prediction_rate', 'Rolling fraud prediction rate')
+confidence_gauge   = Gauge('model_prediction_confidence', 'Latest prediction confidence score')
+error_counter      = Counter('fraud_api_errors_total', 'Total number of API errors', ['endpoint'])
 
 # ── Global State ───────────────────────────────────────────
 model = None
@@ -173,39 +176,48 @@ def health():
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """
-    Single prediction endpoint.
-    Accepts JSON with feature values, returns fraud prediction.
-    """
     start_time = time.time()
-    
     try:
         data = request.get_json()
         features = pd.DataFrame([data['features']])
-        
         prediction = model.predict(features)
         pred_label = 'fraud' if prediction[0] == 1 else 'legitimate'
-        
-        latency = time.time() - start_time
-        
-        # Update Prometheus metrics
-        with latency_histogram.time():
-            pass
+
+        # FIX 1: observe actual elapsed time
+        latency_histogram.observe(time.time() - start_time)
+
         prediction_counter.labels(
             model_version=model_version,
             prediction=pred_label
         ).inc()
-        
+
+        # FIX 3a: confidence score (if model supports predict_proba)
+        try:
+            unwrapped = model._model_impl  # unwrap pyfunc wrapper    
+            if hasattr(model, 'predict_proba'):
+                proba = model.predict_proba(features)
+                confidence = float(np.max(proba[0]))
+                confidence_gauge.set(confidence)
+        except AttributeError:
+            pass        
+
+        # FIX 3b: rolling fraud rate from counter values
+        fraud_total = prediction_counter.labels(model_version=model_version, prediction='fraud')._value.get()
+        legit_total  = prediction_counter.labels(model_version=model_version, prediction='legitimate')._value.get()
+        total = fraud_total + legit_total
+        if total > 0:
+            fraud_rate_gauge.set(fraud_total / total)
+
         return jsonify({
             'prediction': int(prediction[0]),
             'label': pred_label,
             'model_version': model_version,
-            'latency_ms': round(latency * 1000, 2)
+            'latency_ms': round((time.time() - start_time) * 1000, 2)
         })
-        
     except Exception as e:
+        # FIX 3c: count errors
+        error_counter.labels(endpoint='/predict').inc()
         return jsonify({'error': str(e)}), 400
-
 @app.route('/detect_drift', methods=['POST'])
 def detect_drift():
     """
@@ -253,6 +265,8 @@ def detect_drift():
         })
         
     except Exception as e:
+        # FIX 3d: count drift endpoint errors
+        error_counter.labels(endpoint='/detect_drift').inc()
         return jsonify({'error': str(e)}), 400
 
 @app.route('/metrics', methods=['GET'])

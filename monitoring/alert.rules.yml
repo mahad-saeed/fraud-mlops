@@ -1,0 +1,73 @@
+groups:
+  - name: fraud_detection_alerts
+    interval: 30s
+    rules:
+
+      # ── 1. High API Latency ──────────────────────────────────────────────
+      - alert: HighApiLatency
+        expr: >
+          histogram_quantile(0.95,
+            rate(fraud_prediction_latency_seconds_bucket[5m])
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High P95 prediction latency"
+          description: >
+            P95 latency is {{ $value | humanizeDuration }} — above the 2s
+            threshold for more than 5 minutes.
+
+      # ── 2. High Error Rate ───────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: >
+          (
+            rate(fraud_api_errors_total[5m])
+            /
+            (rate(fraud_predictions_total[5m]) + rate(fraud_api_errors_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud API error rate above 5%"
+          description: >
+            Error rate is {{ $value | humanizePercentage }} on endpoint
+            {{ $labels.endpoint }} — sustained for over 5 minutes.
+
+      # ── 3. Drift Detected ────────────────────────────────────────────────
+      - alert: DriftDetected
+        expr: ensemble_weighted_vote > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Data drift detected by ensemble"
+          description: >
+            Ensemble weighted vote is {{ $value | humanize }} — above 0.5
+            for more than 10 minutes, indicating persistent distribution shift.
+
+      # ── 4. High Fraud Rate ───────────────────────────────────────────────
+      - alert: HighFraudRate
+        expr: fraud_prediction_rate > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud prediction rate above 20%"
+          description: >
+            Rolling fraud rate is {{ $value | humanizePercentage }} — above
+            the 20% threshold for more than 10 minutes. May indicate an attack
+            pattern or model degradation.
+
+      # ── 5. Retraining Triggered ──────────────────────────────────────────
+      - alert: RetrainingTriggered
+        expr: increase(retraining_triggered_total[15m]) > 0
+        for: 0m
+        labels:
+          severity: info
+        annotations:
+          summary: "Model retraining was triggered"
+          description: >
+            At least one retraining event was dispatched in the last 15 minutes
+            (total triggers so far: {{ $value }}).

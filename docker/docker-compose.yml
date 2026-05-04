@@ -1,0 +1,62 @@
+services:
+
+  mlflow:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.mlflow
+    container_name: mlflow_server
+    working_dir: /mlflow
+    volumes:
+      - ../mlruns:/mlflow/mlruns
+      - ../mlflow.db:/mlflow/mlflow.db
+    ports:
+      - "5002:5000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  fraud_api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: fraud_api
+    ports:
+      - "5001:5001"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    volumes:
+      - ../data:/app/data
+      - ../mlruns:/mlflow/mlruns
+    mem_limit: 512m
+    
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../monitoring/prometheus/alert.rules.yml:/etc/prometheus/alert.rules.yml
+    mem_limit: 256m
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    mem_limit: 256m
+
+volumes:
+  grafana_data:
