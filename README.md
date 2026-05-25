@@ -4,6 +4,8 @@ Production-grade **end-to-end MLOps** for real-time credit card fraud detection,
 
 **Paper:** *A Weighted Ensemble Concept Drift Detection System for Financial Fraud Detection within a Comprehensive MLOps Pipeline* — Mahad Saeed & Muhammad Alizaib, FAST-NUCES Islamabad.
 
+**Demo video:** https://drive.google.com/file/d/1e21ww8Ti38XAZ2mrqpTsBobw41qBSGbf/view?usp=drive_link
+
 ---
 
 ## Highlights
