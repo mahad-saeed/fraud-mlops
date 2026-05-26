@@ -6,7 +6,13 @@ Production-grade **end-to-end MLOps** for real-time credit card fraud detection,
 
 **Paper link:** https://drive.google.com/file/d/1WZvTV_uNeV2lF7x7_CdGTtsDGIkq5jjB/view?usp=sharing
 
-**Demo video:** https://drive.google.com/file/d/1e21ww8Ti38XAZ2mrqpTsBobw41qBSGbf/view?usp=drive_link
+**Demo video:** 
+
+
+https://github.com/user-attachments/assets/368176cb-0dc5-499e-806c-cdbc7a6b6656
+
+
+
 
 ---
 
